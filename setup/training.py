@@ -8,6 +8,11 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 import pandas as pd
 from chemprop import data, featurizers, models, nn
 
+# TODO: Do this in a more automatic way maybe or add them to parser
+# TODO: Maybe add to parser the wandb project name
+# TODO: Also need to try and integrate this in the gflownet mpnn inference
+# TODO: I also need how to create a repo and import 2 forked ones
+
 INPUT_PATH = "data/KOW.csv"
 SMILES_COL = "smiles"
 TARGET_COL = ["active"]
@@ -15,12 +20,9 @@ TARGET_COL = ["active"]
 SPLIT_TYPE = "SCAFFOLD_BALANCED"
 SPLIT_SIZE = [0.8, 0.1, 0.1]
 
-# TODO: Figure out what to log in wandb
-# Train Loss
-# Val Loss
-# Train MAE, RMSE, R2
-# Val MAE, RMSE, R2
-# Test MAE, RMSE, R2
+# TODO: When used for gpu training change the project name to create new one
+# TODO: Add more hyperparams for hidden dims maybe
+# TODO: Check how to add learning rate and optimizer (current)
 
 """python training.py --scaling False --batch_size 248 --depth 2 --dropout 0.2 --acti
 vation_mpnn 'relu' --aggregation 'mean' --hidden_dim_readout 64
@@ -37,7 +39,6 @@ def set_seed():
 
 def setup_run(args):
     wandb.login()
-    # TODO: Figure out what to log
     wandb.init(
         project="New Test project",
         config={
@@ -51,6 +52,9 @@ def setup_run(args):
             "hidden_layers_readout": args.hidden_layers_readout,
             "dropout_readout": args.dropout_readout,
             "batch_norm": args.batch_norm,
+            "init_lr": args.init_lr,
+            "max_lr": args.max_lr,
+            "final_lr": args.final_lr,
         },
     )
 
@@ -105,6 +109,13 @@ def ready_parser():
     )
     parser.add_argument("--dropout_readout", type=float, help="Dropout for readout")
     parser.add_argument("--batch_norm", type=bool, help="Batch norm", default=False)
+    parser.add_argument(
+        "--init_lr", type=float, help="Initial learning rate", default=1e-3
+    )
+    parser.add_argument("--max_lr", type=float, help="Max learning rate", default=1e-2)
+    parser.add_argument(
+        "--final_lr", type=float, help="Final learning rate", default=1e-4
+    )
     return parser.parse_args()
 
 
@@ -176,9 +187,11 @@ def create_dataloader(
     return train_loader, val_loader, test_loader
 
 
-def message_passing(depth: int, dropout: float, activation_fn: str):
-    activation = get_activation(activation_fn)
-    return nn.AtomMessagePassing(depth=depth, dropout=dropout, activation=activation)
+def message_passing(args):
+    activation = get_activation(args.activation_mpnn)
+    return nn.AtomMessagePassing(
+        depth=args.depth, dropout=args.dropout, activation=activation
+    )
 
 
 def get_aggregation(aggr: str):
@@ -209,14 +222,17 @@ def readout_mlp(
     )
 
 
-def build_mpnn(mp, agg, ffn, batch_norm: bool = False):
+def build_mpnn(mp, agg, ffn, args):
     # TODO: Fix this
     return models.MPNN(
         message_passing=mp,
         agg=agg,
         predictor=ffn,
-        batch_norm=batch_norm,
+        batch_norm=args.batch_norm,
         metrics=[nn.metrics.RMSE(), nn.metrics.MAE(), nn.metrics.R2Score()],
+        init_lr=args.init_lr,
+        max_lr=args.max_lr,
+        final_lr=args.final_lr,
     )
 
 
@@ -289,7 +305,7 @@ def main():
     train_loader, val_loader, test_loader = create_dataloader(
         train_dataset, val_dataset, test_dataset, args.batch_size, 0
     )
-    mp = message_passing(args.depth, args.dropout, args.activation_mpnn)
+    mp = message_passing(args)
     agg = get_aggregation(args.aggregation)
     ffn = readout_mlp(
         args.hidden_dim_readout,
@@ -298,7 +314,7 @@ def main():
         args.scaling,
         scaler,
     )
-    model = build_mpnn(mp, agg, ffn, args.batch_norm)
+    model = build_mpnn(mp, agg, ffn, args)
     trainer = ready_trainer(max_epochs=1)
     trainer.fit(model, train_loader, val_loader)
     trainer.test(dataloaders=test_loader)
@@ -312,7 +328,6 @@ if __name__ == "__main__":
     main()
 
 
-"""python training.py --scaling False --batch_size 248 --depth 2 --dropout 0.2 --acti
-vation_mpnn 'relu' --aggregation 'mean' --hidden_dim_readout 64
---hidden_layers_readout 1 --dropout_readout 0.2 --batch_norm False
+"""python training.py --scaling False --batch_size 248 --depth 2 --dropout 0.2 --activation_mpnn 'relu' --aggregation 'mean' --hidden_dim_readout 64
+--hidden_layers_readout 1 --dropout_readout 0.2 --batch_norm False --init_lr 0.0001 --max_lr 0.001 --final_lr 0.00001
 """
