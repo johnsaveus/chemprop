@@ -162,7 +162,7 @@ cython_debug/
 *.idea
 *.DS_Store
 *.vscode
-*.csv
+#*.csv
 *.pkl
 *.pt
 *.json
@@ -175,5 +175,6 @@ chemprop/_version.py
 #.ipynb
 config.toml
 lighting_data/
+lightning_logs/
 wandb/
 !tests/data/*
