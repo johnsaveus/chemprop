@@ -9,7 +9,6 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 import pandas as pd
 from chemprop import data, featurizers, models, nn
 
-# TODO: Maybe add to parser the wandb project name
 # TODO: Also need to try and integrate this in the gflownet mpnn inference
 # TODO: I also need how to create a repo and import 2 forked ones
 PROJECT_NAMES = ["SCAFFOLD_BALANCED", "RANDOM"]
@@ -124,7 +123,6 @@ def load_data(input_path, smiles_col, target_col):
     return all_data
 
 
-# TODO: Check atom_dim, hidden_dim, bond_dim
 def get_activation(fn: str):
     if fn == "relu":
         return nn.Activation.RELU
@@ -173,11 +171,19 @@ def create_dataloader(
 ):
     train_loader = data.build_dataloader(train_dataset, batch_size, num_workers)
 
-    val_loader = data.build_dataloader(val_dataset, batch_size, num_workers)
+    val_loader = data.build_dataloader(
+        val_dataset, batch_size, num_workers, shuffle=False
+    )
 
-    test_loader = data.build_dataloader(test_dataset, batch_size, num_workers)
+    test_loader = data.build_dataloader(
+        test_dataset, batch_size, num_workers, shuffle=False
+    )
 
     return train_loader, val_loader, test_loader
+
+
+def recreate_train_loader(train_dataset, batch_size, num_workers):
+    return data.build_dataloader(train_dataset, batch_size, num_workers, shuffle=False)
 
 
 def message_passing(args):
@@ -341,7 +347,6 @@ def calc_metrics(predictions, real, split: str):
 
 
 def predict(train_loader, val_loader, test_loader, model: models.MPNN):
-    # TODO: Load the config of train featurizer
     with torch.inference_mode():
         trainer = pl.Trainer(
             logger=None,
@@ -349,9 +354,15 @@ def predict(train_loader, val_loader, test_loader, model: models.MPNN):
             accelerator="cpu",
             devices=1,  # 1 for cpu , 'auto' for everything else
         )
-        train_preds = [el[0] for el in trainer.predict(model, train_loader)[0].tolist()]
-        val_preds = [el[0] for el in trainer.predict(model, val_loader)[0].tolist()]
-        test_preds = [el[0] for el in trainer.predict(model, test_loader)[0].tolist()]
+        train_preds = [
+            el[0] for batch in trainer.predict(model, train_loader) for el in batch
+        ]
+        val_preds = [
+            el[0] for batch in trainer.predict(model, val_loader) for el in batch
+        ]
+        test_preds = [
+            el[0] for batch in trainer.predict(model, test_loader) for el in batch
+        ]
 
     return train_preds, val_preds, test_preds
 
@@ -376,14 +387,16 @@ def main():
     trainer.fit(model, train_loader, val_loader)
     ckpt = get_best_checkpoint(trainer)
     best_model = load_model(ckpt)
-    train_preds, val_preds, test_preds = predict(
-        train_loader, val_loader, test_loader, best_model
-    )
     train_real = [d.y[0] for d in train_data[0]]
     val_real = [d.y[0] for d in val_data[0]]
     test_real = [d.y[0] for d in test_data[0]]
     real = {"train": train_real, "val": val_real, "test": test_real}
+    train_loader = recreate_train_loader(train_dataset, args.batch_size, 0)
+    train_preds, val_preds, test_preds = predict(  # val_preds, test_preds
+        train_loader, val_loader, test_loader, best_model
+    )
     preds = {"train": train_preds, "val": val_preds, "test": test_preds}
+    print(len(train_preds), len(train_real))
     calc_metrics(train_preds, train_real, "train")
     calc_metrics(val_preds, val_real, "val")
     calc_metrics(test_preds, test_real, "test")
