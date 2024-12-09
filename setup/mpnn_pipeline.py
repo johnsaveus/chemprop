@@ -1,4 +1,3 @@
-import argparse
 import random
 import numpy as np
 import torch
@@ -10,15 +9,7 @@ import pandas as pd
 from chemprop import data, featurizers, models, nn
 
 # TODO: Also need to try and integrate this in the gflownet mpnn inference
-# TODO: I also need how to create a repo and import 2 forked ones
-PROJECT_NAMES = ["SCAFFOLD_BALANCED", "RANDOM"]
-INPUT_PATH = "data/KOW.csv"
-SMILES_COL = "smiles"
-TARGET_COL = ["active"]
-# These are not used in hyperparam tuning for now
-SPLIT_TYPE = "SCAFFOLD_BALANCED"
-SPLIT_SIZE = [0.8, 0.1, 0.1]
-
+# TODO: I also need how to create a repo and import 2 forked ones with submodules
 # TODO: When used for gpu training change the project name to create new one
 
 
@@ -63,52 +54,6 @@ class WandbLoggingCallback(pl.Callback):
             "val/loss": trainer.callback_metrics.get("val_loss"),
         }
         wandb.log(metrics)
-
-
-def ready_parser():
-    parser = argparse.ArgumentParser(description="Train a MPNN model")
-    parser.add_argument(
-        "--project_name",
-        type=str,
-        help="Wandb project name",
-        default="SCAFFOLD_BALANCED",
-    )
-    parser.add_argument(
-        "--scaling", type=bool, help="Whether to apply scaling on target", default=True
-    )
-    parser.add_argument(
-        "--batch_size", type=int, help="Batch size for training-val", default=64
-    )
-    parser.add_argument(
-        "--message_hidden_dim", type=int, help="Hidden dim for message", default=128
-    )
-    parser.add_argument("--depth", type=int, help="Depth of MPNN", default=3)
-    parser.add_argument("--dropout", type=float, help="Dropout for MPNN", default=0.1)
-    parser.add_argument(
-        "--activation_mpnn",
-        type=str,
-        help="Activation function for MPNN",
-        default="relu",
-    )
-    parser.add_argument(
-        "--aggregation", type=str, help="Aggregation function", default="mean"
-    )
-    parser.add_argument(
-        "--hidden_dim_readout", type=int, help="Hidden dim for readout", default=128
-    )
-    parser.add_argument(
-        "--hidden_layers_readout", type=int, help="Hidden layers for readout", default=1
-    )
-    parser.add_argument("--dropout_readout", type=float, help="Dropout for readout")
-    parser.add_argument("--batch_norm", type=bool, help="Batch norm", default=False)
-    parser.add_argument(
-        "--init_lr", type=float, help="Initial learning rate", default=1e-3
-    )
-    parser.add_argument("--max_lr", type=float, help="Max learning rate", default=1e-2)
-    parser.add_argument(
-        "--final_lr", type=float, help="Final learning rate", default=1e-4
-    )
-    return parser.parse_args()
 
 
 def load_data(input_path, smiles_col, target_col):
@@ -252,7 +197,7 @@ def ready_trainer(max_epochs: int = 100):
         enable_checkpointing=True,  # Use `True` if you want to save model checkpoints. The checkpoints will be saved in the `checkpoints` folder.
         enable_progress_bar=True,
         accelerator="auto",
-        devices=1,
+        devices="auto",
         max_epochs=max_epochs,  # number of epochs to train for
         callbacks=[
             checkpointing,
@@ -352,7 +297,7 @@ def predict(train_loader, val_loader, test_loader, model: models.MPNN):
             logger=None,
             enable_progress_bar=True,
             accelerator="cpu",
-            devices=1,  # 1 for cpu , 'auto' for everything else
+            devices="auto",  # 1 for cpu , 'auto' for everything else
         )
         train_preds = [
             el[0] for batch in trainer.predict(model, train_loader) for el in batch
@@ -365,47 +310,3 @@ def predict(train_loader, val_loader, test_loader, model: models.MPNN):
         ]
 
     return train_preds, val_preds, test_preds
-
-
-def main():
-    args = ready_parser()
-    set_seed()
-    setup_run(args)
-    all_data = load_data(INPUT_PATH, SMILES_COL, TARGET_COL)
-    train_data, val_data, test_data = get_split(all_data, args.project_name, SPLIT_SIZE)
-    train_dataset, val_dataset, test_dataset, scaler = create_datasets(
-        train_data, val_data, test_data, args.scaling
-    )
-    train_loader, val_loader, test_loader = create_dataloader(
-        train_dataset, val_dataset, test_dataset, args.batch_size, 0
-    )
-    mp = message_passing(args)
-    agg = get_aggregation(args.aggregation)
-    ffn = readout_mlp(args, scaler)
-    model = build_mpnn(mp, agg, ffn, args)
-    trainer = ready_trainer(max_epochs=10)
-    trainer.fit(model, train_loader, val_loader)
-    ckpt = get_best_checkpoint(trainer)
-    best_model = load_model(ckpt)
-    train_real = [d.y[0] for d in train_data[0]]
-    val_real = [d.y[0] for d in val_data[0]]
-    test_real = [d.y[0] for d in test_data[0]]
-    real = {"train": train_real, "val": val_real, "test": test_real}
-    train_loader = recreate_train_loader(train_dataset, args.batch_size, 0)
-    train_preds, val_preds, test_preds = predict(  # val_preds, test_preds
-        train_loader, val_loader, test_loader, best_model
-    )
-    preds = {"train": train_preds, "val": val_preds, "test": test_preds}
-    print(len(train_preds), len(train_real))
-    calc_metrics(train_preds, train_real, "train")
-    calc_metrics(val_preds, val_real, "val")
-    calc_metrics(test_preds, test_real, "test")
-    plot(real, preds)
-
-
-if __name__ == "__main__":
-    main()
-
-
-"""python training.py --project_name "SCAFFOLD_BALANCED" --scaling False --batch_size 248 --message_hidden_dim 300 --depth 2 --dropout 0.2 --activation_mpnn 'relu' --aggregation 'mean' --hidden_dim_readout 64 --hidden_layers_readout 1 --dropout_readout 0.2 --batch_norm False --init_lr 0.0001 --max_lr 0.001 --final_lr 0.00001
-"""
